@@ -75,7 +75,6 @@ export default function LandingPage() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8, delay: 0.25, ease: [0.16, 1, 0.3, 1] }}
           className="mt-12 max-w-xl text-sm leading-relaxed text-neutral-600 sm:mt-20 sm:text-base"
-          style={{ fontFamily: FONT_BODY }}
         >
           {CONTENT.blurb}
         </motion.p>
@@ -109,10 +108,7 @@ export default function LandingPage() {
         </motion.div>
       </section>
 
-      <footer
-        className="relative z-10 px-6 pb-8 sm:px-12 sm:pb-10"
-        style={{ fontFamily: FONT_BODY }}
-      >
+      <footer className="relative z-10 px-6 pb-8 sm:px-12 sm:pb-10">
         <div className="mx-auto h-px w-full max-w-5xl bg-neutral-900/10" />
         <div className="mx-auto mt-5 flex w-full max-w-5xl flex-wrap items-center justify-between gap-3 text-sm text-neutral-600">
           <span>

@@ -19,12 +19,15 @@
 # next.js
 /.next/
 /out/
+.turbo/
 
 # production
 /build
 
 # misc
 .DS_Store
+Thumbs.db
+ehthumbs.db
 *.pem
 
 # debug
