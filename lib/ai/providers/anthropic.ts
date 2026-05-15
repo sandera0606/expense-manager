@@ -5,7 +5,7 @@ import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claud
 import {
   EXTRACT_RECEIPT_PROMPT_VERSION,
   EXTRACT_RECEIPT_SYSTEM_PROMPT,
-} from '@/lib/ai/prompts/extract-receipt.v2';
+} from '@/lib/ai/prompts/extract-receipt.v3';
 import {
   extractedReceiptSchema,
   extractedReceiptToolSchema,
@@ -202,6 +202,118 @@ export async function extractReceiptWithAnthropic(input: {
     telemetry: telemetryFrom(result, latency_ms),
   };
 }
+
+// -----------------------------------------------------------------------------
+// Generic one-shot text query — same Agent SDK plumbing as the receipt
+// extractor, but with a text-only user message. Used by the NL→ViewQuery
+// flow and any future "ask Claude for JSON" call sites.
+// -----------------------------------------------------------------------------
+
+export type TextQueryResult =
+  | {
+      ok: true;
+      text: string;
+      raw: unknown;
+      telemetry: Omit<ExtractionTelemetry, 'prompt_version'> & { prompt_version: string };
+    }
+  | {
+      ok: false;
+      error: string;
+      raw: unknown;
+      telemetry: Omit<ExtractionTelemetry, 'prompt_version'> & { prompt_version: string };
+    };
+
+export async function runTextQueryWithAnthropic(input: {
+  systemPrompt: string;
+  promptVersion: string;
+  userText: string;
+}): Promise<TextQueryResult> {
+  const startedAt = Date.now();
+  const userMessage: SDKUserMessage = {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text: input.userText }],
+    },
+    parent_tool_use_id: null,
+  };
+
+  async function* prompt(): AsyncIterable<SDKUserMessage> {
+    yield userMessage;
+  }
+
+  let result: Extract<SDKMessage, { type: 'result' }> | null = null;
+  try {
+    const q = query({
+      prompt: prompt(),
+      options: {
+        systemPrompt: input.systemPrompt,
+        model: DEFAULT_MODEL,
+        maxTurns: 2,
+        tools: [],
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        persistSession: false,
+      },
+    });
+
+    for await (const msg of q) {
+      if (msg.type === 'result') {
+        result = msg as Extract<SDKMessage, { type: 'result' }>;
+        break;
+      }
+    }
+  } catch (err) {
+    const latency_ms = Date.now() - startedAt;
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      raw: null,
+      telemetry: { ...telemetryFrom(null, latency_ms), prompt_version: input.promptVersion },
+    };
+  }
+
+  const latency_ms = Date.now() - startedAt;
+
+  if (!result) {
+    return {
+      ok: false,
+      error: 'Agent SDK returned no result message.',
+      raw: null,
+      telemetry: { ...telemetryFrom(null, latency_ms), prompt_version: input.promptVersion },
+    };
+  }
+
+  if (result.subtype !== 'success') {
+    return {
+      ok: false,
+      error:
+        ('errors' in result && Array.isArray(result.errors) && result.errors.length > 0
+          ? result.errors.join('; ')
+          : null) ?? `Query failed: ${result.subtype}`,
+      raw: result,
+      telemetry: { ...telemetryFrom(result, latency_ms), prompt_version: input.promptVersion },
+    };
+  }
+
+  if (typeof result.result !== 'string' || result.result.length === 0) {
+    return {
+      ok: false,
+      error: 'Result has no result text.',
+      raw: result,
+      telemetry: { ...telemetryFrom(result, latency_ms), prompt_version: input.promptVersion },
+    };
+  }
+
+  return {
+    ok: true,
+    text: result.result,
+    raw: result,
+    telemetry: { ...telemetryFrom(result, latency_ms), prompt_version: input.promptVersion },
+  };
+}
+
+export { stripJsonFences };
 
 // Dispatch on MIME type: images go through an `image` content block, PDFs
 // through a `document` block. Sonnet 4.6 accepts both natively.

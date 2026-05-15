@@ -17,10 +17,17 @@ export async function extractReceipt(opts: {
   bytes: Uint8Array;
   mimeType: string;
 }): Promise<ExtractionResult> {
+  console.log(
+    `[extract] start receipt=${opts.receiptId} mime=${opts.mimeType} bytes=${opts.bytes.byteLength}`
+  );
   const provider = await extractReceiptWithAnthropic({
     bytes: opts.bytes,
     mimeType: opts.mimeType,
   });
+  console.log(
+    `[extract] provider ok=${provider.ok} latency_ms=${provider.telemetry.latency_ms} input_tok=${provider.telemetry.input_tokens} output_tok=${provider.telemetry.output_tokens} cost=${provider.telemetry.cost_usd}`
+  );
+  if (!provider.ok) console.log(`[extract] provider-error ${provider.error}`);
 
   const runInsert = await opts.supabase
     .from('extraction_runs')

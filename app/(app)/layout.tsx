@@ -28,6 +28,12 @@ export default function AppLayout({
             <Link href="/feed" className="hover:text-foreground">
               Feed
             </Link>
+            <Link href="/ask" className="hover:text-foreground">
+              Ask
+            </Link>
+            <Link href="/views" className="hover:text-foreground">
+              Views
+            </Link>
             <Link href="/inbox" className="hover:text-foreground">
               Inbox
             </Link>

@@ -41,11 +41,16 @@ export async function ingestUpload(opts: {
   event: IngestionEvent;
 }): Promise<IngestResult> {
   const { supabase, event } = opts;
+  console.log(
+    `[ingest] start filename=${event.filename} mime=${event.mime_type} bytes=${event.bytes.byteLength} source=${event.source_kind}`
+  );
 
   if (!ALLOWED_MIME.has(event.mime_type)) {
+    console.log(`[ingest] reject mime=${event.mime_type}`);
     return { ok: false, error: `Unsupported file type: ${event.mime_type}` };
   }
   if (event.bytes.byteLength > MAX_BYTES) {
+    console.log(`[ingest] reject too-large bytes=${event.bytes.byteLength}`);
     return { ok: false, error: 'File exceeds 20 MB limit' };
   }
 
@@ -53,6 +58,7 @@ export async function ingestUpload(opts: {
   // extracting. Same-file re-uploads are common (camera burst, email forward
   // already imported, Composio later picking up the same Gmail thread).
   const fileHash = await sha256Hex(event.bytes);
+  console.log(`[ingest] hash=${fileHash.slice(0, 12)}…`);
 
   const { data: existing } = await supabase
     .from('receipts')
@@ -61,6 +67,9 @@ export async function ingestUpload(opts: {
     .eq('file_hash', fileHash)
     .maybeSingle();
   if (existing) {
+    console.log(
+      `[ingest] duplicate existing=${existing.id} status=${existing.status}`
+    );
     return {
       ok: true,
       receiptId: existing.id,
@@ -81,8 +90,10 @@ export async function ingestUpload(opts: {
       upsert: false,
     });
   if (uploadRes.error) {
+    console.log(`[ingest] storage-fail ${uploadRes.error.message}`);
     return { ok: false, error: `Upload failed: ${uploadRes.error.message}` };
   }
+  console.log(`[ingest] uploaded path=${storagePath}`);
 
   const { data: receipt, error: receiptErr } = await supabase
     .from('receipts')
@@ -99,11 +110,18 @@ export async function ingestUpload(opts: {
     .select('id')
     .single();
   if (receiptErr || !receipt) {
+    console.log(
+      `[ingest] receipt-row-fail ${receiptErr?.message ?? 'unknown'} — cleaning up orphan storage`
+    );
+    // Roll back the just-uploaded file so we don't leak storage orphans
+    // every time the DB insert hiccups (RLS misconfig, schema drift, etc.).
+    await supabase.storage.from('receipts').remove([storagePath]);
     return {
       ok: false,
       error: `Receipt row insert failed: ${receiptErr?.message ?? 'unknown'}`,
     };
   }
+  console.log(`[ingest] receipt-row id=${receiptId}`);
 
   const extraction = await extractReceipt({
     supabase,
@@ -113,12 +131,16 @@ export async function ingestUpload(opts: {
   });
 
   if (!extraction.ok) {
+    console.log(`[ingest] extract-fail ${extraction.error}`);
     await supabase
       .from('receipts')
       .update({ status: 'failed' satisfies ReceiptStatus })
       .eq('id', receiptId);
     return { ok: true, receiptId, transactionId: null, status: 'failed' };
   }
+  console.log(
+    `[ingest] extract-ok merchant=${extraction.data.merchant} total=${extraction.data.total_amount} confidence=${extraction.data.confidence}`
+  );
 
   const normalized = await normalizeReceipt({
     supabase,
@@ -128,6 +150,7 @@ export async function ingestUpload(opts: {
   });
 
   if (!normalized.ok) {
+    console.log(`[ingest] normalize-fail ${normalized.error}`);
     await supabase
       .from('receipts')
       .update({ status: 'failed' satisfies ReceiptStatus })
@@ -142,6 +165,9 @@ export async function ingestUpload(opts: {
     .from('receipts')
     .update({ status: finalStatus })
     .eq('id', receiptId);
+  console.log(
+    `[ingest] done receipt=${receiptId} txn=${normalized.transactionId} status=${finalStatus}`
+  );
 
   return {
     ok: true,

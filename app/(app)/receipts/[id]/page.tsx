@@ -196,11 +196,7 @@ async function ReceiptBody({
                 </div>
               </div>
             ) : (
-              <p className="mt-2 text-sm text-muted-foreground">
-                No transaction recorded.
-                {receipt.status === 'failed' &&
-                  ' Extraction failed — see audit trail below.'}
-              </p>
+              <NoTransactionNotice status={receipt.status} runs={runs ?? []} />
             )}
           </div>
 
@@ -241,6 +237,66 @@ async function ReceiptBody({
         </section>
       </div>
     </>
+  );
+}
+
+// When there's no linked transaction we either failed at the provider step
+// (no parsed_output) or normalize rejected the extraction as not-a-receipt
+// (parsed_output present but low confidence). Surface the model's own notes
+// inline so the user understands why, without making them expand the audit
+// JSON details.
+type AuditRun = {
+  parsed_output: unknown;
+  error: string | null;
+};
+
+function NoTransactionNotice({
+  status,
+  runs,
+}: {
+  status: string;
+  runs: AuditRun[];
+}) {
+  const latest = runs[0];
+  const parsed =
+    latest?.parsed_output && typeof latest.parsed_output === 'object'
+      ? (latest.parsed_output as {
+          confidence?: number;
+          notes?: string | null;
+        })
+      : null;
+
+  // Heuristic: provider succeeded (we have parsed_output) but confidence is
+  // very low ⇒ this was rejected as not-a-receipt by normalize.
+  const rejected =
+    status === 'failed' &&
+    parsed !== null &&
+    typeof parsed.confidence === 'number' &&
+    parsed.confidence < 0.3;
+
+  if (rejected) {
+    return (
+      <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm">
+        <p className="font-medium text-amber-700 dark:text-amber-400">
+          This didn&rsquo;t look like a receipt.
+        </p>
+        {parsed?.notes && (
+          <p className="mt-0.5 text-xs text-muted-foreground">{parsed.notes}</p>
+        )}
+        <p className="mt-1 text-xs text-muted-foreground">
+          No transaction was created. Delete this receipt if it&rsquo;s not
+          something you want to track.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <p className="mt-2 text-sm text-muted-foreground">
+      No transaction recorded.
+      {status === 'failed' &&
+        ' Extraction failed — see audit trail below.'}
+    </p>
   );
 }
 

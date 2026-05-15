@@ -17,10 +17,14 @@ import type { ExtractedReceipt } from '@/types/ai';
 // =============================================================================
 
 export const REVIEW_CONFIDENCE_THRESHOLD = 0.6;
+// Below this the extractor is signalling "not a receipt" (per v3 prompt). We
+// drop the record rather than pollute the canonical transactions table with
+// merchant=null, total=0 rows that would still appear in the feed.
+export const REJECT_CONFIDENCE_THRESHOLD = 0.3;
 
 export type NormalizeResult =
   | { ok: true; transactionId: string; needsReview: boolean }
-  | { ok: false; error: string };
+  | { ok: false; error: string; rejected?: boolean };
 
 export async function normalizeReceipt(opts: {
   supabase: SupabaseClient;
@@ -30,8 +34,25 @@ export async function normalizeReceipt(opts: {
 }): Promise<NormalizeResult> {
   const { supabase, userId, receiptId, extracted } = opts;
 
+  if (extracted.confidence < REJECT_CONFIDENCE_THRESHOLD) {
+    const reason = extracted.notes ?? 'Not recognized as a receipt';
+    console.log(
+      `[normalize] reject receipt=${receiptId} confidence=${extracted.confidence} reason=${JSON.stringify(reason)}`
+    );
+    return { ok: false, error: `Rejected: ${reason}`, rejected: true };
+  }
+
   const merchantNormalized = normalizeMerchant(extracted.merchant);
-  const occurredAt = normalizeDate(extracted.occurred_at);
+  const dateParse = normalizeDate(extracted.occurred_at);
+  const occurredAt = dateParse.value;
+  if (dateParse.fallback) {
+    console.log(
+      `[normalize] date-fallback receipt=${receiptId} raw=${JSON.stringify(extracted.occurred_at)} → ${occurredAt} (forcing needs_review)`
+    );
+  }
+  console.log(
+    `[normalize] receipt=${receiptId} merchant=${merchantNormalized} occurred_at=${occurredAt} hint=${extracted.category_hint ?? '∅'} lines=${extracted.line_items.length}`
+  );
 
   let categoryId: string | null = null;
   if (extracted.category_hint) {
@@ -41,6 +62,9 @@ export async function normalizeReceipt(opts: {
       hint: extracted.category_hint,
       confidence: extracted.confidence,
     });
+    console.log(
+      `[normalize] txn-category hint=${extracted.category_hint} → ${categoryId ?? 'null (low-confidence, no autocreate)'}`
+    );
   }
 
   const { data: txn, error: txnErr } = await supabase
@@ -62,8 +86,10 @@ export async function normalizeReceipt(opts: {
     .single();
 
   if (txnErr || !txn) {
+    console.log(`[normalize] txn-insert-fail ${txnErr?.message ?? 'unknown'}`);
     return { ok: false, error: txnErr?.message ?? 'Failed to insert transaction' };
   }
+  console.log(`[normalize] txn-insert id=${txn.id}`);
 
   if (extracted.line_items.length > 0) {
     // Resolve per-line category hints in parallel. A null hint means the line
@@ -95,11 +121,21 @@ export async function normalizeReceipt(opts: {
       .from('transaction_line_items')
       .insert(rows);
     if (lineErr) {
-      return { ok: false, error: `Line items insert failed: ${lineErr.message}` };
+      // The transaction is the canonical record; line items are
+      // supplementary. Don't roll back the whole receipt — keep the txn,
+      // force needs_review, and let the user re-extract or accept it as-is.
+      console.log(`[normalize] lines-insert-fail keeping-txn ${lineErr.message}`);
+      return { ok: true, transactionId: txn.id, needsReview: true };
     }
+    const lineCategorized = lineCategoryIds.filter((c) => c !== null).length;
+    console.log(
+      `[normalize] lines-inserted count=${rows.length} categorized=${lineCategorized}`
+    );
   }
 
-  const needsReview = extracted.confidence < REVIEW_CONFIDENCE_THRESHOLD;
+  const needsReview =
+    extracted.confidence < REVIEW_CONFIDENCE_THRESHOLD || dateParse.fallback;
+  console.log(`[normalize] done txn=${txn.id} needs_review=${needsReview}`);
   return { ok: true, transactionId: txn.id, needsReview };
 }
 
@@ -156,18 +192,32 @@ export function normalizeMerchant(merchant: string | null): string | null {
 
 // Accepts "2025-03-14", "2025-03-14T13:45:00Z", "03/14/2025", etc.
 // Defaults to midnight UTC when only a date is provided.
-function normalizeDate(input: string): string {
+//
+// Returns { fallback: true } when the input was unparseable and we had to
+// invent a date. The caller forces needs_review in that case so today's
+// timestamp doesn't silently masquerade as the receipt's real date.
+type DateParse = { value: string; fallback: boolean };
+
+function normalizeDate(input: string): DateParse {
   const date = new Date(input);
-  if (!Number.isNaN(date.getTime())) return date.toISOString();
+  if (!Number.isNaN(date.getTime())) {
+    return { value: date.toISOString(), fallback: false };
+  }
   // Fallback: parse YYYY-MM-DD or MM/DD/YYYY manually.
   const iso = input.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}T00:00:00Z`;
+  if (iso) {
+    return {
+      value: `${iso[1]}-${iso[2]}-${iso[3]}T00:00:00Z`,
+      fallback: false,
+    };
+  }
   const us = input.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   if (us) {
     const m = us[1].padStart(2, '0');
     const d = us[2].padStart(2, '0');
-    return `${us[3]}-${m}-${d}T00:00:00Z`;
+    return { value: `${us[3]}-${m}-${d}T00:00:00Z`, fallback: false };
   }
-  // Last resort: now. The receipt will show low confidence anyway.
-  return new Date().toISOString();
+  // Last resort: now. The receipt is forced to needs_review so the user
+  // notices the date is a guess.
+  return { value: new Date().toISOString(), fallback: true };
 }

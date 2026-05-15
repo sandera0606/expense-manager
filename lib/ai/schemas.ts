@@ -7,6 +7,13 @@
 
 import { z } from 'zod';
 
+import { viewQuerySchema } from '@/lib/layout/schemas';
+
+export const answerQueryOutputSchema = z.object({
+  query: viewQuerySchema,
+  summary: z.string().min(1),
+});
+
 export const extractedLineItemSchema = z.object({
   description: z.string().min(1),
   quantity: z.number().nullable().optional(),
