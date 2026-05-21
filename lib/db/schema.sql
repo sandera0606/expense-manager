@@ -177,6 +177,31 @@ create index if not exists layouts_user_idx on layouts(user_id);
 create unique index if not exists layouts_user_default_idx
   on layouts(user_id) where is_default;
 
+-- -----------------------------------------------------------------------------
+-- pairing_codes — short-lived single-use codes that let a phone sign in
+-- without typing email/password. Desktop (already authed) generates a code
+-- and displays it as a QR; phone hits /pair/<code>, server validates,
+-- trades for a Supabase magic-link token, and signs the phone in.
+-- Service-role only: no RLS policies. Generation and consume both run with
+-- the admin client.
+-- -----------------------------------------------------------------------------
+create table if not exists pairing_codes (
+  code text primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  consumed_at timestamptz,
+  consumer_ip inet,
+  consumer_ua text
+);
+
+create index if not exists pairing_codes_expires_idx
+  on pairing_codes(expires_at) where consumed_at is null;
+
+alter table pairing_codes enable row level security;
+-- (intentionally no policies — consume must run unauthenticated under the
+-- service role; that's the whole point of the pairing handshake)
+
 -- =============================================================================
 -- Row Level Security
 -- =============================================================================
@@ -361,7 +386,7 @@ create trigger on_auth_user_created
 -- =============================================================================
 -- Verification — these SELECTs return rows so the SQL editor's result panel
 -- shows you what was actually installed. Should report:
---   tables                = 9
+--   tables                = 10
 --   policies_public       = 9
 --   policies_storage      = 4
 --   bucket_receipts       = 1
@@ -374,7 +399,7 @@ select
   (select count(*) from pg_tables where schemaname='public'
      and tablename in ('categories','tags','receipts','transactions',
                        'transaction_line_items','transaction_tags','extraction_runs',
-                       'views','layouts')) as tables,
+                       'views','layouts','pairing_codes')) as tables,
   (select count(*) from pg_policies where schemaname='public') as policies_public,
   (select count(*) from pg_policies where schemaname='storage' and tablename='objects'
      and policyname like 'receipts_%') as policies_storage,

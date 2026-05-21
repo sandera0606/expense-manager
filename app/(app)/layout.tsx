@@ -40,6 +40,9 @@ export default function AppLayout({
             <Link href="/upload" className="hover:text-foreground">
               Upload
             </Link>
+            <Link href="/scan" className="hover:text-foreground">
+              Scan
+            </Link>
             <Link
               href="/settings/categories"
               className="hidden hover:text-foreground sm:inline"

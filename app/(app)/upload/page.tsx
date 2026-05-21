@@ -1,4 +1,5 @@
 import { Dropzone } from '@/components/upload/dropzone';
+import { PairPanel } from '@/components/upload/pair-panel';
 
 export default function UploadPage() {
   return (
@@ -11,6 +12,7 @@ export default function UploadPage() {
         </p>
       </header>
       <Dropzone />
+      <PairPanel />
     </div>
   );
 }
